@@ -36,6 +36,7 @@
 #include <openssl/provider.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #endif
 
 // Protobuf helpers moved to protobuf_methods.cpp
@@ -128,6 +129,15 @@ bool containsWeakSha1Cert(const std::string& pemPath, std::string& details)
 		if (cert == nullptr)
 		{
 			break;
+		}
+
+		// Самоподписанный корень — якорь доверия: OpenSSL не проверяет его собственную подпись
+		// (без X509_V_FLAG_CHECK_SS_SIGNATURE), поэтому SHA-1 у корня на рукопожатие и SECLEVEL не влияет.
+		// Блокируем только сертификаты, чья подпись реально проверяется: промежуточные и конечные.
+		if (X509_check_issued(cert, cert) == X509_V_OK)
+		{
+			X509_free(cert);
+			continue;
 		}
 
 		const int sigNid = X509_get_signature_nid(cert);
