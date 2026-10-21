@@ -1,0 +1,42 @@
+# escape=`
+# Сборка Windows-dll компоненты в Windows-контейнере: тот же набор, что scripts\build_windows.bat
+# (MSVC 2022 Build Tools + vcpkg x64-windows-static + гейт avro-cpp >= 1.12.1).
+# Нужен Docker Desktop в режиме Windows-контейнеров. Запуск — scripts\build_windows_docker.bat из корня репозитория.
+# Результат внутри образа: C:\src\build\Release\SimpleKafka1C.dll
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+SHELL ["cmd", "/S", "/C"]
+
+# 1. MSVC Build Tools 2022: C++ x64, Windows SDK 10.0.22621 (rc.exe из SDK 26100 падает в Server Core: Access violation), CMake из комплекта VS
+ADD https://aka.ms/vs/17/release/vs_buildtools.exe C:\TEMP\vs_buildtools.exe
+RUN (C:\TEMP\vs_buildtools.exe --quiet --wait --norestart --nocache `
+        --installPath "C:\BuildTools" `
+        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
+        --add Microsoft.VisualStudio.Component.VC.CMake.Project `
+     || IF "%ERRORLEVEL%"=="3010" EXIT 0) `
+    && del /q C:\TEMP\vs_buildtools.exe
+
+# 2. Git для vcpkg (MinGit, без установщика)
+ADD https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/MinGit-2.47.1-64-bit.zip C:\TEMP\mingit.zip
+RUN powershell -NoProfile -Command "Expand-Archive C:\TEMP\mingit.zip C:\MinGit" && del /q C:\TEMP\mingit.zip
+RUN setx /M PATH "%PATH%;C:\MinGit\cmd"
+
+# 3. vcpkg. VCPKG_COMMIT — чтобы dll и so собирались на одних версиях зависимостей (по умолчанию — свежий, как в .bat)
+ARG VCPKG_COMMIT=
+RUN git clone https://github.com/microsoft/vcpkg C:\vcpkg `
+    && (IF NOT "%VCPKG_COMMIT%"=="" git -C C:\vcpkg checkout %VCPKG_COMMIT%) `
+    && C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+# 4. Зависимости — отдельным слоем: правка исходников их не пересобирает
+RUN call C:\BuildTools\Common7\Tools\VsDevCmd.bat -arch=amd64 -host_arch=amd64 `
+    && C:\vcpkg\vcpkg install librdkafka avro-cpp protobuf abseil utf8-range boost-property-tree boost-json boost-container snappy fmt curl --triplet x64-windows-static
+
+# ВАЖНО: avro-cpp >= 1.12.1 (баг декодирования рекурсивных схем в 1.11.x) — гейт, как в build_windows.bat
+RUN powershell -NoProfile -Command "$v = ((C:\vcpkg\vcpkg list avro-cpp | Select-String 'avro-cpp').ToString() -split '\s+')[1]; Write-Host ('avro-cpp version: ' + $v); if (-not ($v -match '^(1\.12\.[1-9]|1\.1[3-9]\.|2\.)')) { Write-Error ('avro-cpp ' + $v + ': need >= 1.12.1'); exit 1 }"
+
+# 5. Исходники и сборка (каталог build хоста не копируется — .dockerignore)
+COPY . C:\src
+WORKDIR C:\src
+RUN call C:\BuildTools\Common7\Tools\VsDevCmd.bat -arch=amd64 -host_arch=amd64 `
+    && cmake -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+    && cmake --build build --config Release
