@@ -6,11 +6,12 @@
 FROM mcr.microsoft.com/windows/servercore:ltsc2022
 SHELL ["cmd", "/S", "/C"]
 
-# 1. MSVC Build Tools 2022: C++ x64, Windows SDK, CMake из комплекта VS
+# 1. MSVC Build Tools 2022: C++ x64, Windows SDK 10.0.22621 (rc.exe из SDK 26100 падает в Server Core: Access violation), CMake из комплекта VS
 ADD https://aka.ms/vs/17/release/vs_buildtools.exe C:\TEMP\vs_buildtools.exe
 RUN (C:\TEMP\vs_buildtools.exe --quiet --wait --norestart --nocache `
         --installPath "C:\BuildTools" `
-        --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended `
+        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
         --add Microsoft.VisualStudio.Component.VC.CMake.Project `
      || IF "%ERRORLEVEL%"=="3010" EXIT 0) `
     && del /q C:\TEMP\vs_buildtools.exe
